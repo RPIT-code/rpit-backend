@@ -10,3 +10,11 @@ def startup():
 @app.get("/")
 def home():
     return {"message": "RPIT Backend Running 🚀"}
+
+@app.get("/test-db")
+def test_database():
+    try:
+        test_db()
+        return {"status": "DB Connected ✅"}
+    except:
+        return {"status": "DB Failed ❌"}
