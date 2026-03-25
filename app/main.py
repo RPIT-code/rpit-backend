@@ -1,8 +1,18 @@
+import razorpay
+import os
+
+
+
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 
 from app.db import test_db, init_db, get_db
 from app.models import Case, CaseStatusLog, Message, ServiceItem, Payment, Rating
+
+client = razorpay.Client(auth=(
+    os.getenv("RAZORPAY_KEY_ID"),
+    os.getenv("RAZORPAY_SECRET")
+))
 
 
 # ✅ FIRST define app
@@ -165,22 +175,29 @@ def add_service(
     
     
 @app.post("/create-payment")
-def create_payment(
-    service_item_id: int,
-    amount: int,
-    db: Session = Depends(get_db)
-):
+def create_payment(service_item_id: int, amount: int, db: Session = Depends(get_db)):
 
+    # 1. Create Razorpay Order
+    order = client.order.create({
+        "amount": amount * 100,  # paisa
+        "currency": "INR",
+        "payment_capture": 1
+    })
+
+    # 2. Save in DB
     payment = Payment(
         service_item_id=service_item_id,
         amount=amount,
-        status="pending"
+        status="created",
+        razorpay_order_id=order["id"]
     )
+
     db.add(payment)
     db.commit()
     db.refresh(payment)
 
     return {
-        "message": "Payment created",
-        "payment_id": payment.id
+        "order_id": order["id"],
+        "amount": amount,
+        "key": os.getenv("RAZORPAY_KEY_ID")
     }

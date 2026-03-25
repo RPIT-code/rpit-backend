@@ -2,4 +2,4 @@ fastapi
 uvicorn[standard]
 psycopg2-binary
 sqlalchemy
-razorpay
+razorpay==1.4.2
