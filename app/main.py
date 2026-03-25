@@ -54,3 +54,78 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
         "message": "Case created successfully",
         "case_id": new_case.id
     }
+    
+    from app.models import ServiceItem, Payment, Rating
+
+
+@app.get("/case/{case_id}")
+def get_case(case_id: int, db: Session = Depends(get_db)):
+
+    # 🔹 Get case
+    case = db.query(Case).filter(Case.id == case_id).first()
+
+    # 🔹 Timeline
+    timeline = db.query(CaseStatusLog)\
+        .filter(CaseStatusLog.case_id == case_id)\
+        .order_by(CaseStatusLog.created_at).all()
+
+    # 🔹 Messages
+    messages = db.query(Message)\
+        .filter(Message.case_id == case_id)\
+        .order_by(Message.created_at).all()
+
+    # 🔹 Service Items
+    service_items = db.query(ServiceItem)\
+        .filter(ServiceItem.case_id == case_id).all()
+
+    service_data = []
+
+    for item in service_items:
+        payments = db.query(Payment)\
+            .filter(Payment.service_item_id == item.id).all()
+
+        service_data.append({
+            "id": item.id,
+            "title": item.title,
+            "description": item.description,
+            "status": item.status,
+            "price": item.price,
+            "payments": [
+                {
+                    "amount": p.amount,
+                    "status": p.status
+                } for p in payments
+            ]
+        })
+
+    # 🔹 Rating
+    rating = db.query(Rating)\
+        .filter(Rating.case_id == case_id).first()
+
+    return {
+        "case": {
+            "id": case.id,
+            "title": case.title,
+            "description": case.description,
+            "status": case.status
+        },
+        "timeline": [
+            {
+                "title": t.status_title,
+                "description": t.status_description,
+                "time": t.created_at
+            } for t in timeline
+        ],
+        "messages": [
+            {
+                "sender": m.sender_type,
+                "message": m.message,
+                "time": m.created_at
+            } for m in messages
+        ],
+        "service_items": service_data,
+        "rating": {
+            "rating": rating.rating,
+            "comment": rating.comment
+        } if rating else None
+    }
