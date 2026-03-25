@@ -349,7 +349,7 @@ def payment_failed(data: dict = Body(...), db: Session = Depends(get_db)):
 @app.get("/get-payment-order/{service_id}")
 def get_payment_order(service_id: int, db: Session = Depends(get_db)):
 
-    # 🔥 1. Try to get ACTIVE payment
+    # ✅ PRIORITY 1: active payment
     payment = db.query(Payment)\
         .filter(
             Payment.service_item_id == service_id,
@@ -358,26 +358,12 @@ def get_payment_order(service_id: int, db: Session = Depends(get_db)):
         .order_by(Payment.created_at.desc())\
         .first()
 
-    # 🔥 2. If found → check expiry
-    if payment:
-        if datetime.utcnow() - payment.created_at > timedelta(minutes=15):
-            payment.status = "expired"
-            payment.status_reason = "auto expired"
-            db.commit()
-        else:
-            return {
-                "razorpay_order_id": payment.razorpay_order_id,
-                "amount": payment.amount,
-                "status": payment.status,
-                "created_at": payment.created_at,
-                "key": os.getenv("RAZORPAY_KEY_ID")
-            }
-
-    # 🔥 3. If no active payment → get latest ANY status
-    payment = db.query(Payment)\
-        .filter(Payment.service_item_id == service_id)\
-        .order_by(Payment.created_at.desc())\
-        .first()
+    # ❗ fallback: latest anything
+    if not payment:
+        payment = db.query(Payment)\
+            .filter(Payment.service_item_id == service_id)\
+            .order_by(Payment.created_at.desc())\
+            .first()
 
     if not payment:
         return {"error": "No payment found"}
@@ -386,6 +372,7 @@ def get_payment_order(service_id: int, db: Session = Depends(get_db)):
         "razorpay_order_id": payment.razorpay_order_id,
         "amount": payment.amount,
         "status": payment.status,
-        "created_at": payment.created_at,
+        "created_at": payment.created_at.isoformat(),
+        "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
         "key": os.getenv("RAZORPAY_KEY_ID")
     }
