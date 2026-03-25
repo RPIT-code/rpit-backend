@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 
 from app.db import test_db, init_db, get_db
-from app.models import Case, CaseStatusLog, Message
+from app.models import Case, CaseStatusLog, Message, ServiceItem, Payment, Rating
 
 
 # ✅ FIRST define app
