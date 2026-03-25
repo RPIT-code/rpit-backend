@@ -61,20 +61,19 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
 @app.get("/case/{case_id}")
 def get_case(case_id: int, db: Session = Depends(get_db)):
 
-    # 🔹 Get case
     case = db.query(Case).filter(Case.id == case_id).first()
 
-    # 🔹 Timeline
+    if not case:
+        return {"error": "Case not found"}
+
     timeline = db.query(CaseStatusLog)\
         .filter(CaseStatusLog.case_id == case_id)\
         .order_by(CaseStatusLog.created_at).all()
 
-    # 🔹 Messages
     messages = db.query(Message)\
         .filter(Message.case_id == case_id)\
         .order_by(Message.created_at).all()
 
-    # 🔹 Service Items
     service_items = db.query(ServiceItem)\
         .filter(ServiceItem.case_id == case_id).all()
 
@@ -95,10 +94,9 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
                     "amount": p.amount,
                     "status": p.status
                 } for p in payments
-            ]
+            ] if payments else []
         })
 
-    # 🔹 Rating
     rating = db.query(Rating)\
         .filter(Rating.case_id == case_id).first()
 
@@ -113,17 +111,17 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
             {
                 "title": t.status_title,
                 "description": t.status_description,
-                "time": t.created_at
+                "time": str(t.created_at)
             } for t in timeline
-        ],
+        ] if timeline else [],
         "messages": [
             {
                 "sender": m.sender_type,
                 "message": m.message,
-                "time": m.created_at
+                "time": str(m.created_at)
             } for m in messages
-        ],
-        "service_items": service_data,
+        ] if messages else [],
+        "service_items": service_data if service_data else [],
         "rating": {
             "rating": rating.rating,
             "comment": rating.comment
