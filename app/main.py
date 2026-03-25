@@ -1,6 +1,6 @@
 import os
 import razorpay
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Depends, Request, Body
 from sqlalchemy.orm import Session
 
 from app.db import test_db, init_db, get_db
@@ -278,12 +278,18 @@ def refund_payment(payment_id: int, refund_amount: int, reason: str, db: Session
     return {"message": "Refund processed"}
 
 
+
+
 @app.post("/verify-payment")
 def verify_payment(
-    razorpay_order_id: str,
-    razorpay_payment_id: str,
+    data: dict = Body(...),
     db: Session = Depends(get_db)
 ):
+    razorpay_order_id = data.get("razorpay_order_id")
+    razorpay_payment_id = data.get("razorpay_payment_id")
+
+    if not razorpay_order_id:
+        return {"error": "Missing order_id"}
 
     payment = db.query(Payment)\
         .filter(Payment.razorpay_order_id == razorpay_order_id)\
@@ -292,7 +298,6 @@ def verify_payment(
     if not payment:
         return {"error": "Payment not found"}
 
-    # idempotency
     if payment.status == "paid":
         return {"message": "Already processed"}
 
@@ -304,26 +309,28 @@ def verify_payment(
         .filter(ServiceItem.id == payment.service_item_id)\
         .first()
 
-    service.status = "approved"
+    if service:
+        service.status = "approved"
 
-    db.add(CaseStatusLog(
-        case_id=service.case_id,
-        status_title="Payment Received",
-        status_description=f"₹{payment.amount} paid"
-    ))
+        db.add(CaseStatusLog(
+            case_id=service.case_id,
+            status_title="Payment Received",
+            status_description=f"₹{payment.amount} paid"
+        ))
 
     db.commit()
 
-    return {"message": "Payment verified"}    
+    return {"message": "Payment verified"}  
     
     
 @app.post("/payment-failed")
 def payment_failed(
-    razorpay_order_id: str,
-    razorpay_payment_id: str,
-    reason: str,
+    data: dict = Body(...),
     db: Session = Depends(get_db)
 ):
+    razorpay_order_id = data.get("razorpay_order_id")
+    razorpay_payment_id = data.get("razorpay_payment_id")
+    reason = data.get("reason")
 
     payment = db.query(Payment)\
         .filter(Payment.razorpay_order_id == razorpay_order_id)\
@@ -338,4 +345,4 @@ def payment_failed(
 
     db.commit()
 
-    return {"message": "Payment marked as failed"}
+    return {"message": "Payment failed recorded"}
