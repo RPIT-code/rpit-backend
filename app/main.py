@@ -271,7 +271,7 @@ def update_service(service_id: int, new_price: int, db: Session = Depends(get_db
     if not service:
         return {"error": "Service not found"}
 
-    # 🔴 Step 1: Expire old payments
+    # expire old payments
     old_payments = db.query(Payment)\
         .filter(Payment.service_item_id == service_id)\
         .filter(Payment.status == "created")\
@@ -279,11 +279,11 @@ def update_service(service_id: int, new_price: int, db: Session = Depends(get_db
 
     for p in old_payments:
         p.status = "expired"
+        p.status_reason = "Price updated by agent"
 
-    # 🔴 Step 2: Update service price
+    # update price
     service.price = new_price
 
-    # 🔴 Step 3: Add timeline entry
     db.add(CaseStatusLog(
         case_id=service.case_id,
         status_title="Service Updated",
@@ -292,4 +292,57 @@ def update_service(service_id: int, new_price: int, db: Session = Depends(get_db
 
     db.commit()
 
-    return {"message": "Service updated and old payments expired"}  
+    return {"message": "Service updated and old payments expired"}
+    
+@app.post("/mark-payment-success")
+def mark_payment_success(payment_id: int, razorpay_payment_id: str, db: Session = Depends(get_db)):
+
+    payment = db.query(Payment).filter(Payment.id == payment_id).first()
+
+    if not payment:
+        return {"error": "Payment not found"}
+
+    payment.status = "paid"
+    payment.razorpay_payment_id = razorpay_payment_id
+    payment.status_reason = "Payment successful"
+
+    # timeline entry
+    service = db.query(ServiceItem).filter(ServiceItem.id == payment.service_item_id).first()
+
+    db.add(CaseStatusLog(
+        case_id=service.case_id,
+        status_title="Payment Received",
+        status_description=f"₹{payment.amount} received"
+    ))
+
+    db.commit()
+
+    return {"message": "Payment marked as paid"}
+    
+@app.post("/refund-payment")
+def refund_payment(payment_id: int, refund_amount: int, reason: str, db: Session = Depends(get_db)):
+
+    payment = db.query(Payment).filter(Payment.id == payment_id).first()
+
+    if not payment:
+        return {"error": "Payment not found"}
+
+    if payment.status != "paid":
+        return {"error": "Only paid payments can be refunded"}
+
+    payment.status = "refunded"
+    payment.refund_amount = refund_amount
+    payment.refund_status = "processed"
+    payment.status_reason = reason
+
+    service = db.query(ServiceItem).filter(ServiceItem.id == payment.service_item_id).first()
+
+    db.add(CaseStatusLog(
+        case_id=service.case_id,
+        status_title="Refund Issued",
+        status_description=f"₹{refund_amount} refunded - {reason}"
+    ))
+
+    db.commit()
+
+    return {"message": "Refund processed"}    

@@ -5,7 +5,6 @@ from datetime import datetime
 Base = declarative_base()
 
 
-# 🧩 CASES
 class Case(Base):
     __tablename__ = "cases"
 
@@ -17,7 +16,6 @@ class Case(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
-# 🧩 STATUS LOGS (Timeline)
 class CaseStatusLog(Base):
     __tablename__ = "case_status_logs"
 
@@ -29,18 +27,16 @@ class CaseStatusLog(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# 🧩 CHAT MESSAGES
 class Message(Base):
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, index=True)
     case_id = Column(Integer, ForeignKey("cases.id"))
-    sender_type = Column(String)  # user / agent
+    sender_type = Column(String)
     message = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# 🧩 SERVICE ITEMS
 class ServiceItem(Base):
     __tablename__ = "service_items"
 
@@ -54,8 +50,6 @@ class ServiceItem(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
-# 🧩 PAYMENTS (UPDATED ✅)
-# 🧩 PAYMENTS
 class Payment(Base):
     __tablename__ = "payments"
 
@@ -65,19 +59,20 @@ class Payment(Base):
     amount = Column(Integer)
     status = Column(String, default="created")
 
-    # 🔥 Razorpay fields
     razorpay_order_id = Column(String, nullable=True)
     razorpay_payment_id = Column(String, nullable=True)
 
     payment_provider = Column(String, default="razorpay")
 
-    # ✅ ADD THIS HERE
     status_reason = Column(String, nullable=True)
+
+    # 🔥 NEW (Refund Support)
+    refund_amount = Column(Integer, nullable=True)
+    refund_status = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# 🧩 RATINGS
 class Rating(Base):
     __tablename__ = "ratings"
 
