@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, JSON
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base
 from datetime import datetime
 
 Base = declarative_base()
@@ -54,16 +54,22 @@ class ServiceItem(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
-# 🧩 PAYMENTS
+# 🧩 PAYMENTS (UPDATED ✅)
 class Payment(Base):
     __tablename__ = "payments"
 
     id = Column(Integer, primary_key=True, index=True)
     service_item_id = Column(Integer, ForeignKey("service_items.id"))
+
     amount = Column(Integer)
-    status = Column(String, default="pending")
-    payment_provider = Column(String)
-    payment_id = Column(String, nullable=True)
+    status = Column(String, default="created")
+
+    # 🔥 Razorpay fields (IMPORTANT)
+    razorpay_order_id = Column(String, nullable=True)
+    razorpay_payment_id = Column(String, nullable=True)
+
+    payment_provider = Column(String, default="razorpay")
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
 

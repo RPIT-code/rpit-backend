@@ -41,6 +41,7 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
         description=description,
         status="open"
     )
+
     db.add(new_case)
     db.commit()
     db.refresh(new_case)
@@ -120,14 +121,14 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
                 "description": t.status_description,
                 "time": str(t.created_at)
             } for t in timeline
-        ] if timeline else [],
+        ],
         "messages": [
             {
                 "sender": m.sender_type,
                 "message": m.message,
                 "time": str(m.created_at)
             } for m in messages
-        ] if messages else [],
+        ],
         "service_items": service_data,
         "rating": {
             "rating": rating.rating,
@@ -138,13 +139,7 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
 
 # 🧩 Add Service
 @app.post("/add-service")
-def add_service(
-    case_id: int,
-    title: str,
-    description: str,
-    price: int,
-    db: Session = Depends(get_db)
-):
+def add_service(case_id: int, title: str, description: str, price: int, db: Session = Depends(get_db)):
 
     service = ServiceItem(
         case_id=case_id,
@@ -176,19 +171,17 @@ def add_service(
 @app.post("/create-payment")
 def create_payment(service_item_id: int, amount: int, db: Session = Depends(get_db)):
 
-    # 🔴 Safety: check service exists
     service = db.query(ServiceItem).filter(ServiceItem.id == service_item_id).first()
     if not service:
         return {"error": "Invalid service_item_id"}
 
-    # 1️⃣ Create Razorpay Order
+    # Razorpay order
     order = client.order.create({
-        "amount": amount * 100,  # paisa
+        "amount": amount * 100,
         "currency": "INR",
         "payment_capture": 1
     })
 
-    # 2️⃣ Save Payment in DB
     payment = Payment(
         service_item_id=service_item_id,
         amount=amount,
@@ -204,4 +197,44 @@ def create_payment(service_item_id: int, amount: int, db: Session = Depends(get_
         "order_id": order["id"],
         "amount": amount,
         "key": os.getenv("RAZORPAY_KEY_ID")
+    }
+
+
+# 🔁 Reopen Case
+@app.post("/reopen-case")
+def reopen_case(case_id: int, reason: str, db: Session = Depends(get_db)):
+
+    case = db.query(Case).filter(Case.id == case_id).first()
+
+    if not case:
+        return {"error": "Case not found"}
+
+    # Safe check (in case DB not updated yet)
+    if hasattr(case, "allow_reopen") and case.allow_reopen == 0:
+        return {"error": "Reopen disabled for this case"}
+
+    case.status = "reopened"
+
+    db.add(CaseStatusLog(
+        case_id=case_id,
+        status_title="Case Reopened",
+        status_description=reason
+    ))
+
+    service = ServiceItem(
+        case_id=case_id,
+        title="Reopen Consultation",
+        description=reason,
+        price=99,
+        status="quoted"
+    )
+
+    db.add(service)
+    db.commit()
+    db.refresh(service)
+
+    return {
+        "message": "Case reopened",
+        "service_id": service.id,
+        "amount": 99
     }
