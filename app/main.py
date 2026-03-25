@@ -209,32 +209,48 @@ def reopen_case(case_id: int, reason: str, db: Session = Depends(get_db)):
     if not case:
         return {"error": "Case not found"}
 
-    # Safe check (in case DB not updated yet)
+    # Optional control
     if hasattr(case, "allow_reopen") and case.allow_reopen == 0:
         return {"error": "Reopen disabled for this case"}
 
+    # Only allow if closed
+    if case.status != "closed":
+        return {"error": "Only closed cases can be reopened"}
+
+    # Update status
     case.status = "reopened"
 
+    # Timeline entry
     db.add(CaseStatusLog(
         case_id=case_id,
         status_title="Case Reopened",
         status_description=reason
     ))
 
-    service = ServiceItem(
-        case_id=case_id,
-        title="Reopen Consultation",
-        description=reason,
-        price=99,
-        status="quoted"
-    )
-
-    db.add(service)
     db.commit()
-    db.refresh(service)
 
     return {
-        "message": "Case reopened",
-        "service_id": service.id,
-        "amount": 99
+        "message": "Case reopened successfully"
     }
+    
+    
+    
+@app.post("/close-case")
+def close_case(case_id: int, db: Session = Depends(get_db)):
+
+    case = db.query(Case).filter(Case.id == case_id).first()
+
+    if not case:
+        return {"error": "Case not found"}
+
+    case.status = "closed"
+
+    db.add(CaseStatusLog(
+        case_id=case_id,
+        status_title="Case Closed",
+        status_description="Issue resolved successfully"
+    ))
+
+    db.commit()
+
+    return {"message": "Case closed"}    
