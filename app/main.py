@@ -276,3 +276,42 @@ def refund_payment(payment_id: int, refund_amount: int, reason: str, db: Session
     db.commit()
 
     return {"message": "Refund processed"}
+
+
+@app.post("/verify-payment")
+def verify_payment(
+    razorpay_order_id: str,
+    razorpay_payment_id: str,
+    db: Session = Depends(get_db)
+):
+
+    payment = db.query(Payment)\
+        .filter(Payment.razorpay_order_id == razorpay_order_id)\
+        .first()
+
+    if not payment:
+        return {"error": "Payment not found"}
+
+    # idempotency
+    if payment.status == "paid":
+        return {"message": "Already processed"}
+
+    payment.status = "paid"
+    payment.razorpay_payment_id = razorpay_payment_id
+    payment.status_reason = "frontend success"
+
+    service = db.query(ServiceItem)\
+        .filter(ServiceItem.id == payment.service_item_id)\
+        .first()
+
+    service.status = "approved"
+
+    db.add(CaseStatusLog(
+        case_id=service.case_id,
+        status_title="Payment Received",
+        status_description=f"₹{payment.amount} paid"
+    ))
+
+    db.commit()
+
+    return {"message": "Payment verified"}    
