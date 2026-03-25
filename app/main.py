@@ -1,7 +1,5 @@
-import razorpay
 import os
-
-
+import razorpay
 
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
@@ -9,29 +7,32 @@ from sqlalchemy.orm import Session
 from app.db import test_db, init_db, get_db
 from app.models import Case, CaseStatusLog, Message, ServiceItem, Payment, Rating
 
+
+# 🔐 Razorpay client
 client = razorpay.Client(auth=(
     os.getenv("RAZORPAY_KEY_ID"),
     os.getenv("RAZORPAY_SECRET")
 ))
 
 
-# ✅ FIRST define app
+# 🚀 App init
 app = FastAPI()
 
 
-# ✅ THEN startup
+# 🔄 Startup
 @app.on_event("startup")
 def startup():
     test_db()
     init_db()
 
 
-# ✅ THEN routes
+# 🏠 Home
 @app.get("/")
 def home():
     return {"message": "RPIT Backend Running 🚀"}
 
 
+# 🧾 Create Case
 @app.post("/create-case")
 def create_case(title: str, description: str, db: Session = Depends(get_db)):
 
@@ -44,19 +45,17 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_case)
 
-    status = CaseStatusLog(
+    db.add(CaseStatusLog(
         case_id=new_case.id,
         status_title="Issue Submitted",
         status_description=f"User reported: {title}"
-    )
-    db.add(status)
+    ))
 
-    message = Message(
+    db.add(Message(
         case_id=new_case.id,
         sender_type="user",
         message=description
-    )
-    db.add(message)
+    ))
 
     db.commit()
 
@@ -64,15 +63,13 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
         "message": "Case created successfully",
         "case_id": new_case.id
     }
-    
-    from app.models import ServiceItem, Payment, Rating
 
 
+# 📂 Get Case Detail
 @app.get("/case/{case_id}")
 def get_case(case_id: int, db: Session = Depends(get_db)):
 
     case = db.query(Case).filter(Case.id == case_id).first()
-
     if not case:
         return {"error": "Case not found"}
 
@@ -131,14 +128,15 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
                 "time": str(m.created_at)
             } for m in messages
         ] if messages else [],
-        "service_items": service_data if service_data else [],
+        "service_items": service_data,
         "rating": {
             "rating": rating.rating,
             "comment": rating.comment
         } if rating else None
     }
-    
-    
+
+
+# 🧩 Add Service
 @app.post("/add-service")
 def add_service(
     case_id: int,
@@ -153,38 +151,44 @@ def add_service(
         title=title,
         description=description,
         price=price,
-        status="pending"
+        status="quoted"
     )
+
     db.add(service)
     db.commit()
     db.refresh(service)
 
-    # Timeline update
-    status = CaseStatusLog(
+    db.add(CaseStatusLog(
         case_id=case_id,
-        status_title="Service Added",
-        status_description=f"{title} added with quote ₹{price}"
-    )
-    db.add(status)
+        status_title="Service Proposed",
+        status_description=f"{title} → ₹{price}"
+    ))
+
     db.commit()
 
     return {
-        "message": "Service added",
+        "message": "Service proposed",
         "service_id": service.id
     }
-    
-    
+
+
+# 💳 Create Payment (Razorpay Order)
 @app.post("/create-payment")
 def create_payment(service_item_id: int, amount: int, db: Session = Depends(get_db)):
 
-    # 1. Create Razorpay Order
+    # 🔴 Safety: check service exists
+    service = db.query(ServiceItem).filter(ServiceItem.id == service_item_id).first()
+    if not service:
+        return {"error": "Invalid service_item_id"}
+
+    # 1️⃣ Create Razorpay Order
     order = client.order.create({
         "amount": amount * 100,  # paisa
         "currency": "INR",
         "payment_capture": 1
     })
 
-    # 2. Save in DB
+    # 2️⃣ Save Payment in DB
     payment = Payment(
         service_item_id=service_item_id,
         amount=amount,
