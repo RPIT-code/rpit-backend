@@ -315,3 +315,27 @@ def verify_payment(
     db.commit()
 
     return {"message": "Payment verified"}    
+    
+    
+    @app.post("/payment-failed")
+def payment_failed(
+    razorpay_order_id: str,
+    razorpay_payment_id: str,
+    reason: str,
+    db: Session = Depends(get_db)
+):
+
+    payment = db.query(Payment)\
+        .filter(Payment.razorpay_order_id == razorpay_order_id)\
+        .first()
+
+    if not payment:
+        return {"error": "Payment not found"}
+
+    payment.status = "failed"
+    payment.razorpay_payment_id = razorpay_payment_id
+    payment.status_reason = reason
+
+    db.commit()
+
+    return {"message": "Payment marked as failed"}
