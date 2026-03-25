@@ -129,7 +129,7 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
     }
     
     
-    @app.post("/add-service")
+@app.post("/add-service")
 def add_service(
     case_id: int,
     title: str,
@@ -164,7 +164,7 @@ def add_service(
     }
     
     
-    @app.post("/create-payment")
+@app.post("/create-payment")
 def create_payment(
     service_item_id: int,
     amount: int,
