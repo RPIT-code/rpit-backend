@@ -317,7 +317,7 @@ def verify_payment(
     return {"message": "Payment verified"}    
     
     
-    @app.post("/payment-failed")
+@app.post("/payment-failed")
 def payment_failed(
     razorpay_order_id: str,
     razorpay_payment_id: str,
