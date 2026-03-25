@@ -127,3 +127,60 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
             "comment": rating.comment
         } if rating else None
     }
+    
+    
+    @app.post("/add-service")
+def add_service(
+    case_id: int,
+    title: str,
+    description: str,
+    price: int,
+    db: Session = Depends(get_db)
+):
+
+    service = ServiceItem(
+        case_id=case_id,
+        title=title,
+        description=description,
+        price=price,
+        status="pending"
+    )
+    db.add(service)
+    db.commit()
+    db.refresh(service)
+
+    # Timeline update
+    status = CaseStatusLog(
+        case_id=case_id,
+        status_title="Service Added",
+        status_description=f"{title} added with quote ₹{price}"
+    )
+    db.add(status)
+    db.commit()
+
+    return {
+        "message": "Service added",
+        "service_id": service.id
+    }
+    
+    
+    @app.post("/create-payment")
+def create_payment(
+    service_item_id: int,
+    amount: int,
+    db: Session = Depends(get_db)
+):
+
+    payment = Payment(
+        service_item_id=service_item_id,
+        amount=amount,
+        status="pending"
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    return {
+        "message": "Payment created",
+        "payment_id": payment.id
+    }
