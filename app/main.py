@@ -2,7 +2,7 @@ import os
 import razorpay
 from fastapi import FastAPI, Depends, Request, Body
 from sqlalchemy.orm import Session
-
+from fastapi.middleware.cors import CORSMiddleware
 from app.db import test_db, init_db, get_db
 from app.models import Case, CaseStatusLog, Message, ServiceItem, Payment, Rating
 
@@ -14,6 +14,13 @@ client = razorpay.Client(auth=(
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # for testing
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 def startup():
@@ -197,7 +204,7 @@ async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
 
                     db.add(CaseStatusLog(
                         case_id=service.case_id,
-                        status_title="Payment Received",
+                        status_title="Payment Received",	
                         status_description=f"₹{payment.amount} received"
                     ))
 
