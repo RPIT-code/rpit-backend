@@ -336,3 +336,23 @@ def payment_failed(data: dict = Body(...), db: Session = Depends(get_db)):
 
     db.commit()
     return {"message": "Payment failed recorded"}
+    
+
+
+@app.get("/get-payment-order/{service_id}")
+def get_payment_order(service_id: int, db: Session = Depends(get_db)):
+
+    payment = db.query(Payment)\
+        .filter(Payment.service_item_id == service_id)\
+        .filter(Payment.status == "created")\
+        .order_by(Payment.created_at.desc())\
+        .first()
+
+    if not payment:
+        return {"error": "No active payment found"}
+
+    return {
+        "razorpay_order_id": payment.razorpay_order_id,
+        "amount": payment.amount,
+        "key": os.getenv("RAZORPAY_KEY_ID")
+    }
