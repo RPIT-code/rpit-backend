@@ -169,13 +169,19 @@ def add_service(case_id: int, title: str, description: str, price: int, db: Sess
 
 # 💳 Create Payment (Razorpay Order)
 @app.post("/create-payment")
-def create_payment(service_item_id: int, amount: int, db: Session = Depends(get_db)):
+def create_payment(service_item_id: int, db: Session = Depends(get_db)):
 
     service = db.query(ServiceItem).filter(ServiceItem.id == service_item_id).first()
+
     if not service:
         return {"error": "Invalid service_item_id"}
 
-    # Razorpay order
+    if not service.price:
+        return {"error": "Service price not set"}
+
+    # Use DB price only
+    amount = service.price
+
     order = client.order.create({
         "amount": amount * 100,
         "currency": "INR",
@@ -234,7 +240,7 @@ def reopen_case(case_id: int, reason: str, db: Session = Depends(get_db)):
     }
     
     
-    
+    	
 @app.post("/close-case")
 def close_case(case_id: int, db: Session = Depends(get_db)):
 
@@ -254,3 +260,36 @@ def close_case(case_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Case closed"}    
+    
+    
+    
+@app.post("/update-service")
+def update_service(service_id: int, new_price: int, db: Session = Depends(get_db)):
+
+    service = db.query(ServiceItem).filter(ServiceItem.id == service_id).first()
+
+    if not service:
+        return {"error": "Service not found"}
+
+    # 🔴 Step 1: Expire old payments
+    old_payments = db.query(Payment)\
+        .filter(Payment.service_item_id == service_id)\
+        .filter(Payment.status == "created")\
+        .all()
+
+    for p in old_payments:
+        p.status = "expired"
+
+    # 🔴 Step 2: Update service price
+    service.price = new_price
+
+    # 🔴 Step 3: Add timeline entry
+    db.add(CaseStatusLog(
+        case_id=service.case_id,
+        status_title="Service Updated",
+        status_description=f"Price updated to ₹{new_price}"
+    ))
+
+    db.commit()
+
+    return {"message": "Service updated and old payments expired"}  

@@ -55,6 +55,7 @@ class ServiceItem(Base):
 
 
 # 🧩 PAYMENTS (UPDATED ✅)
+# 🧩 PAYMENTS
 class Payment(Base):
     __tablename__ = "payments"
 
@@ -64,11 +65,14 @@ class Payment(Base):
     amount = Column(Integer)
     status = Column(String, default="created")
 
-    # 🔥 Razorpay fields (IMPORTANT)
+    # 🔥 Razorpay fields
     razorpay_order_id = Column(String, nullable=True)
     razorpay_payment_id = Column(String, nullable=True)
 
     payment_provider = Column(String, default="razorpay")
+
+    # ✅ ADD THIS HERE
+    status_reason = Column(String, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
