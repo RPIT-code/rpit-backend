@@ -344,15 +344,17 @@ def get_payment_order(service_id: int, db: Session = Depends(get_db)):
 
     payment = db.query(Payment)\
         .filter(Payment.service_item_id == service_id)\
-        .filter(Payment.status == "created")\
         .order_by(Payment.created_at.desc())\
         .first()
 
     if not payment:
-        return {"error": "No active payment found"}
+        return {"error": "No payment found"}
 
     return {
         "razorpay_order_id": payment.razorpay_order_id,
         "amount": payment.amount,
+        "status": payment.status,
+        "created_at": payment.created_at,
+        "updated_at": payment.updated_at,
         "key": os.getenv("RAZORPAY_KEY_ID")
     }
