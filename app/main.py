@@ -1,12 +1,30 @@
-from fastapi import Depends
+from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
-from app.db import get_db
+
+from app.db import test_db, init_db, get_db
+from app.models import Case, CaseStatusLog, Message
+
+
+# ✅ FIRST define app
+app = FastAPI()
+
+
+# ✅ THEN startup
+@app.on_event("startup")
+def startup():
+    test_db()
+    init_db()
+
+
+# ✅ THEN routes
+@app.get("/")
+def home():
+    return {"message": "RPIT Backend Running 🚀"}
 
 
 @app.post("/create-case")
 def create_case(title: str, description: str, db: Session = Depends(get_db)):
 
-    # 1. Create Case
     new_case = Case(
         title=title,
         description=description,
@@ -16,7 +34,6 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_case)
 
-    # 2. Status log
     status = CaseStatusLog(
         case_id=new_case.id,
         status_title="Issue Submitted",
@@ -24,7 +41,6 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
     )
     db.add(status)
 
-    # 3. First message
     message = Message(
         case_id=new_case.id,
         sender_type="user",
