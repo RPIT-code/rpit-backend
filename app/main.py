@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from app.db import test_db, init_db, get_db
 from app.models import Case, CaseStatusLog, Message, ServiceItem, Payment, Rating
-
+from datetime import datetime, timedelta
 
 client = razorpay.Client(auth=(
     os.getenv("RAZORPAY_KEY_ID"),
@@ -129,9 +129,14 @@ def create_payment(service_item_id: int, db: Session = Depends(get_db)):
 
     # expire old payments
     db.query(Payment)\
-        .filter(Payment.service_item_id == service_item_id, Payment.status == "created")\
-        .update({"status": "expired", "status_reason": "new attempt"})
-
+    .filter(
+        Payment.service_item_id == service_item_id,
+        Payment.status == "created"
+    )\
+    .update({
+        "status": "expired",
+        "status_reason": "new attempt"
+    })
     order = client.order.create({
         "amount": service.price * 100,
         "currency": "INR",
@@ -339,9 +344,36 @@ def payment_failed(data: dict = Body(...), db: Session = Depends(get_db)):
     
 
 
+
+
 @app.get("/get-payment-order/{service_id}")
 def get_payment_order(service_id: int, db: Session = Depends(get_db)):
 
+    # 🔥 1. Try to get ACTIVE payment
+    payment = db.query(Payment)\
+        .filter(
+            Payment.service_item_id == service_id,
+            Payment.status == "created"
+        )\
+        .order_by(Payment.created_at.desc())\
+        .first()
+
+    # 🔥 2. If found → check expiry
+    if payment:
+        if datetime.utcnow() - payment.created_at > timedelta(minutes=15):
+            payment.status = "expired"
+            payment.status_reason = "auto expired"
+            db.commit()
+        else:
+            return {
+                "razorpay_order_id": payment.razorpay_order_id,
+                "amount": payment.amount,
+                "status": payment.status,
+                "created_at": payment.created_at,
+                "key": os.getenv("RAZORPAY_KEY_ID")
+            }
+
+    # 🔥 3. If no active payment → get latest ANY status
     payment = db.query(Payment)\
         .filter(Payment.service_item_id == service_id)\
         .order_by(Payment.created_at.desc())\
@@ -355,6 +387,5 @@ def get_payment_order(service_id: int, db: Session = Depends(get_db)):
         "amount": payment.amount,
         "status": payment.status,
         "created_at": payment.created_at,
-        "updated_at": payment.updated_at,
         "key": os.getenv("RAZORPAY_KEY_ID")
     }
