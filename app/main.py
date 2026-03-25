@@ -1,32 +1,27 @@
 import os
 import razorpay
-
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.db import test_db, init_db, get_db
 from app.models import Case, CaseStatusLog, Message, ServiceItem, Payment, Rating
 
 
-# 🔐 Razorpay client
 client = razorpay.Client(auth=(
     os.getenv("RAZORPAY_KEY_ID"),
     os.getenv("RAZORPAY_SECRET")
 ))
 
 
-# 🚀 App init
 app = FastAPI()
 
 
-# 🔄 Startup
 @app.on_event("startup")
 def startup():
     test_db()
     init_db()
 
 
-# 🏠 Home
 @app.get("/")
 def home():
     return {"message": "RPIT Backend Running 🚀"}
@@ -36,11 +31,7 @@ def home():
 @app.post("/create-case")
 def create_case(title: str, description: str, db: Session = Depends(get_db)):
 
-    new_case = Case(
-        title=title,
-        description=description,
-        status="open"
-    )
+    new_case = Case(title=title, description=description, status="open")
 
     db.add(new_case)
     db.commit()
@@ -60,13 +51,10 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
 
     db.commit()
 
-    return {
-        "message": "Case created successfully",
-        "case_id": new_case.id
-    }
+    return {"case_id": new_case.id}
 
 
-# 📂 Get Case Detail
+# 📂 Get Case
 @app.get("/case/{case_id}")
 def get_case(case_id: int, db: Session = Depends(get_db)):
 
@@ -94,46 +82,19 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
         service_data.append({
             "id": item.id,
             "title": item.title,
-            "description": item.description,
-            "status": item.status,
             "price": item.price,
+            "status": item.status,
             "payments": [
                 {
                     "amount": p.amount,
                     "status": p.status
                 } for p in payments
-            ] if payments else []
+            ]
         })
 
-    rating = db.query(Rating)\
-        .filter(Rating.case_id == case_id).first()
-
     return {
-        "case": {
-            "id": case.id,
-            "title": case.title,
-            "description": case.description,
-            "status": case.status
-        },
-        "timeline": [
-            {
-                "title": t.status_title,
-                "description": t.status_description,
-                "time": str(t.created_at)
-            } for t in timeline
-        ],
-        "messages": [
-            {
-                "sender": m.sender_type,
-                "message": m.message,
-                "time": str(m.created_at)
-            } for m in messages
-        ],
-        "service_items": service_data,
-        "rating": {
-            "rating": rating.rating,
-            "comment": rating.comment
-        } if rating else None
+        "case": case.id,
+        "services": service_data
     }
 
 
@@ -161,25 +122,18 @@ def add_service(case_id: int, title: str, description: str, price: int, db: Sess
 
     db.commit()
 
-    return {
-        "message": "Service proposed",
-        "service_id": service.id
-    }
+    return {"service_id": service.id}
 
 
-# 💳 Create Payment (Razorpay Order)
+# 💳 Create Payment
 @app.post("/create-payment")
 def create_payment(service_item_id: int, db: Session = Depends(get_db)):
 
     service = db.query(ServiceItem).filter(ServiceItem.id == service_item_id).first()
 
-    if not service:
-        return {"error": "Invalid service_item_id"}
+    if not service or not service.price:
+        return {"error": "Invalid service"}
 
-    if not service.price:
-        return {"error": "Service price not set"}
-
-    # Use DB price only
     amount = service.price
 
     order = client.order.create({
@@ -197,81 +151,84 @@ def create_payment(service_item_id: int, db: Session = Depends(get_db)):
 
     db.add(payment)
     db.commit()
-    db.refresh(payment)
 
     return {
-        "order_id": order["id"],
-        "amount": amount,
-        "key": os.getenv("RAZORPAY_KEY_ID")
+        "razorpay_order_id": order["id"],
+        "razorpay_key": os.getenv("RAZORPAY_KEY_ID"),
+        "amount": amount
     }
 
 
-# 🔁 Reopen Case
-@app.post("/reopen-case")
-def reopen_case(case_id: int, reason: str, db: Session = Depends(get_db)):
+# 🔥 WEBHOOK (CORE)
+@app.post("/razorpay-webhook")
+async def razorpay_webhook(request: Request, db: Session = Depends(get_db)):
 
-    case = db.query(Case).filter(Case.id == case_id).first()
+    body = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature")
 
-    if not case:
-        return {"error": "Case not found"}
+    webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET")
 
-    # Optional control
-    if hasattr(case, "allow_reopen") and case.allow_reopen == 0:
-        return {"error": "Reopen disabled for this case"}
+    try:
+        razorpay.utility.verify_webhook_signature(
+            body.decode(),
+            signature,
+            webhook_secret
+        )
+    except:
+        return {"error": "Invalid signature"}
 
-    # Only allow if closed
-    if case.status != "closed":
-        return {"error": "Only closed cases can be reopened"}
+    payload = await request.json()
+    event = payload.get("event")
 
-    # Update status
-    case.status = "reopened"
+    # ✅ PAYMENT SUCCESS
+    if event == "payment.captured":
 
-    # Timeline entry
-    db.add(CaseStatusLog(
-        case_id=case_id,
-        status_title="Case Reopened",
-        status_description=reason
-    ))
+        entity = payload["payload"]["payment"]["entity"]
 
-    db.commit()
+        razorpay_order_id = entity["order_id"]
+        razorpay_payment_id = entity["id"]
 
-    return {
-        "message": "Case reopened successfully"
-    }
-    
-    
-    	
-@app.post("/close-case")
-def close_case(case_id: int, db: Session = Depends(get_db)):
+        payment = db.query(Payment)\
+            .filter(Payment.razorpay_order_id == razorpay_order_id)\
+            .first()
 
-    case = db.query(Case).filter(Case.id == case_id).first()
+        if not payment:
+            return {"error": "Payment not found"}
 
-    if not case:
-        return {"error": "Case not found"}
+        # 🛑 prevent duplicate updates
+        if payment.status == "paid":
+            return {"message": "Already processed"}
 
-    case.status = "closed"
+        payment.status = "paid"
+        payment.razorpay_payment_id = razorpay_payment_id
+        payment.status_reason = "Payment via webhook"
 
-    db.add(CaseStatusLog(
-        case_id=case_id,
-        status_title="Case Closed",
-        status_description="Issue resolved successfully"
-    ))
+        service = db.query(ServiceItem)\
+            .filter(ServiceItem.id == payment.service_item_id)\
+            .first()
 
-    db.commit()
+        service.status = "approved"
 
-    return {"message": "Case closed"}    
-    
-    
-    
+        db.add(CaseStatusLog(
+            case_id=service.case_id,
+            status_title="Payment Received",
+            status_description=f"₹{payment.amount} received"
+        ))
+
+        db.commit()
+
+    return {"status": "ok"}
+
+
+# 🔁 Update Service (with reason)
 @app.post("/update-service")
-def update_service(service_id: int, new_price: int, db: Session = Depends(get_db)):
+def update_service(service_id: int, new_price: int, reason: str, db: Session = Depends(get_db)):
 
     service = db.query(ServiceItem).filter(ServiceItem.id == service_id).first()
 
     if not service:
         return {"error": "Service not found"}
 
-    # expire old payments
     old_payments = db.query(Payment)\
         .filter(Payment.service_item_id == service_id)\
         .filter(Payment.status == "created")\
@@ -279,56 +236,29 @@ def update_service(service_id: int, new_price: int, db: Session = Depends(get_db
 
     for p in old_payments:
         p.status = "expired"
-        p.status_reason = "Price updated by agent"
+        p.status_reason = reason
 
-    # update price
     service.price = new_price
 
     db.add(CaseStatusLog(
         case_id=service.case_id,
         status_title="Service Updated",
-        status_description=f"Price updated to ₹{new_price}"
+        status_description=f"₹{new_price} - {reason}"
     ))
 
     db.commit()
 
-    return {"message": "Service updated and old payments expired"}
-    
-@app.post("/mark-payment-success")
-def mark_payment_success(payment_id: int, razorpay_payment_id: str, db: Session = Depends(get_db)):
+    return {"message": "Service updated"}
 
-    payment = db.query(Payment).filter(Payment.id == payment_id).first()
 
-    if not payment:
-        return {"error": "Payment not found"}
-
-    payment.status = "paid"
-    payment.razorpay_payment_id = razorpay_payment_id
-    payment.status_reason = "Payment successful"
-
-    # timeline entry
-    service = db.query(ServiceItem).filter(ServiceItem.id == payment.service_item_id).first()
-
-    db.add(CaseStatusLog(
-        case_id=service.case_id,
-        status_title="Payment Received",
-        status_description=f"₹{payment.amount} received"
-    ))
-
-    db.commit()
-
-    return {"message": "Payment marked as paid"}
-    
+# 💸 Refund
 @app.post("/refund-payment")
 def refund_payment(payment_id: int, refund_amount: int, reason: str, db: Session = Depends(get_db)):
 
     payment = db.query(Payment).filter(Payment.id == payment_id).first()
 
-    if not payment:
-        return {"error": "Payment not found"}
-
-    if payment.status != "paid":
-        return {"error": "Only paid payments can be refunded"}
+    if not payment or payment.status != "paid":
+        return {"error": "Invalid payment"}
 
     payment.status = "refunded"
     payment.refund_amount = refund_amount
@@ -345,4 +275,4 @@ def refund_payment(payment_id: int, refund_amount: int, reason: str, db: Session
 
     db.commit()
 
-    return {"message": "Refund processed"}    
+    return {"message": "Refund processed"}
