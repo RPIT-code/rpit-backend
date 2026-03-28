@@ -146,47 +146,45 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
     items = payments.get("items", [])
     attempts = order.get("attempts", 0)
 
-# ✅ SUCCESS
-if order.get("status") == "paid":
-    captured = next((p for p in items if p["status"] == "captured"), None)
+    # ✅ SUCCESS
+    if order.get("status") == "paid":
+        captured = next((p for p in items if p["status"] == "captured"), None)
 
-    if captured:
-        if payment.status != "paid":
-            payment.status = "paid"
-            payment.event_type = "paid"
-            payment.razorpay_payment_id = captured["id"]
-            payment.status_reason = "verified via Razorpay"
-            db.commit()
+        if captured:
+            if payment.status != "paid":
+                payment.status = "paid"
+                payment.event_type = "paid"
+                payment.razorpay_payment_id = captured["id"]
+                payment.status_reason = "verified via Razorpay"
+                db.commit()
 
-        return {
-            "state": "paid",   # ✅ FIXED
-            "order_id": order_id,
-            "amount": captured["amount"] / 100,
-            "attempts": attempts,
-            "method": captured.get("method"),
-            "key": key
-        }
+            return {
+                "state": "paid",
+                "order_id": order_id,
+                "amount": captured["amount"] / 100,
+                "attempts": attempts,
+                "method": captured.get("method"),
+                "key": key
+            }
 
+    # ❌ FAILED
+    if items:
+        last = items[-1]
+        if last["status"] == "failed":
+            return {
+                "state": "failed",
+                "order_id": order_id,
+                "amount": order.get("amount") / 100,
+                "attempts": attempts,
+                "reason": last.get("error_description"),
+                "key": key
+            }
 
-# ❌ FAILED
-if items:
-    last = items[-1]
-    if last["status"] == "failed":
-        return {
-            "state": "failed",   # ✅ FIXED
-            "order_id": order_id,
-            "amount": order.get("amount") / 100,
-            "attempts": attempts,
-            "reason": last.get("error_description"),
-            "key": key
-        }
-
-
-# ⏳ PENDING
-return {
-    "state": "pending",   # ✅ correct
-    "order_id": order_id,
-    "amount": order.get("amount") / 100,
-    "attempts": attempts,
-    "key": key
-}
+    # ⏳ PENDING
+    return {
+        "state": "pending",
+        "order_id": order_id,
+        "amount": order.get("amount") / 100,
+        "attempts": attempts,
+        "key": key
+    }
