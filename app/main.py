@@ -23,8 +23,6 @@ client = razorpay.Client(auth=(
     os.getenv("RAZORPAY_SECRET")
 ))
 
-app = FastAPI()
-
 
 @app.on_event("startup")
 def startup():
@@ -135,15 +133,27 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
     key = os.getenv("RAZORPAY_KEY_ID")
     secret = os.getenv("RAZORPAY_SECRET")
 
-    order = requests.get(
-        f"https://api.razorpay.com/v1/orders/{order_id}",
-        auth=HTTPBasicAuth(key, secret)
-    ).json()
+    try:
+        order_res = requests.get(
+            f"https://api.razorpay.com/v1/orders/{order_id}",
+            auth=HTTPBasicAuth(key, secret)
+        )
 
-    payments = requests.get(
-        f"https://api.razorpay.com/v1/orders/{order_id}/payments",
-        auth=HTTPBasicAuth(key, secret)
-    ).json()
+        if order_res.status_code != 200:
+            return {"error": "Invalid order from Razorpay"}
+
+        order = order_res.json()
+
+        pay_res = requests.get(
+            f"https://api.razorpay.com/v1/orders/{order_id}/payments",
+            auth=HTTPBasicAuth(key, secret)
+        )
+
+        payments = pay_res.json()
+
+    except Exception as e:
+        print("Razorpay error:", str(e))
+        return {"error": "Razorpay fetch failed"}
 
     attempts = order.get("attempts", 0)
     items = payments.get("items", [])
@@ -179,6 +189,6 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
 
     return {
         "state": "pending",
-        "amount": order.get("amount") / 100,
+        "amount": order.get("amount", 0) / 100,
         "attempts": attempts
     }
