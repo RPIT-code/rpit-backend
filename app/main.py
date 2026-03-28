@@ -16,7 +16,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # testing only
+    allow_origins=["*"],  # testing only
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -87,13 +87,16 @@ def create_payment(service_item_id: int, db: Session = Depends(get_db)):
 
     service = db.query(ServiceItem).filter(ServiceItem.id == service_item_id).first()
 
+    if not service or not service.price:
+        return {"error": "Invalid service"}
+
     order = client.order.create({
         "amount": service.price * 100,
         "currency": "INR",
         "payment_capture": 1
     })
 
-    # expire old active payments
+    # expire old payments
     db.query(Payment).filter(
         Payment.service_item_id == service_item_id,
         Payment.status == "created"
@@ -148,33 +151,58 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
         auth=HTTPBasicAuth(key, secret)
     ).json()
 
+    # safety
+    if "error" in order:
+        return {"error": "Razorpay order fetch failed"}
+
+    if "error" in payments:
+        return {"error": "Razorpay payment fetch failed"}
+
     items = payments.get("items", [])
     attempts = order.get("attempts", 0)
     last_payment = items[-1] if items else None
 
-    updated = False  # track DB writes
-
+    # =========================
     # ✅ SUCCESS
+    # =========================
     if order.get("status") == "paid":
         captured = next((p for p in items if p["status"] == "captured"), None)
 
         if captured:
-            if payment.status != "paid":
+            existing_meta = payment.meta or {}
+
+            if (
+                payment.status != "paid"
+                or existing_meta.get("attempts") != attempts
+            ):
                 payment.status = "paid"
                 payment.event_type = "paid"
                 payment.razorpay_payment_id = captured["id"]
                 payment.status_reason = "verified via Razorpay"
                 payment.updated_at = datetime.utcnow()
 
-                payment.meta = {
+                existing_meta.update({
                     "method": captured.get("method"),
                     "attempts": attempts,
                     "amount": captured.get("amount") / 100
-                }
+                })
 
-                updated = True
+                payment.meta = existing_meta
 
-            if updated:
+                # update service + timeline
+                service = db.query(ServiceItem)\
+                    .filter(ServiceItem.id == payment.service_item_id)\
+                    .first()
+
+                if service:
+                    service.status = "approved"
+
+                    db.add(CaseStatusLog(
+                        case_id=service.case_id,
+                        status_title="Payment Received",
+                        status_description=f"₹{payment.amount} received via {captured.get('method')}"
+                    ))
+
                 db.commit()
 
             return {
@@ -186,24 +214,26 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
                 "key": key
             }
 
+    # =========================
     # ❌ FAILED
+    # =========================
     if last_payment and last_payment["status"] == "failed":
 
-        if payment.status != "failed":
+        existing_meta = payment.meta or {}
+
+        if payment.status != "failed" or existing_meta.get("attempts") != attempts:
             payment.status = "failed"
             payment.event_type = "failed"
             payment.status_reason = last_payment.get("error_description")
             payment.updated_at = datetime.utcnow()
 
-            payment.meta = {
+            existing_meta.update({
                 "attempts": attempts,
-                "error_code": last_payment.get("error_code"),
-                "method": last_payment.get("method")
-            }
+                "method": last_payment.get("method"),
+                "error_code": last_payment.get("error_code")
+            })
 
-            updated = True
-
-        if updated:
+            payment.meta = existing_meta
             db.commit()
 
         return {
@@ -215,11 +245,17 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
             "key": key
         }
 
+    # =========================
     # ⏳ PENDING
-    if payment.status == "created":
-        payment.meta = {
+    # =========================
+    existing_meta = payment.meta or {}
+
+    if existing_meta.get("attempts") != attempts:
+        existing_meta.update({
             "attempts": attempts
-        }
+        })
+
+        payment.meta = existing_meta
         payment.updated_at = datetime.utcnow()
         db.commit()
 
