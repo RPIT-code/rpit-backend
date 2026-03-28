@@ -3,19 +3,16 @@ from sqlalchemy.orm import sessionmaker
 import os
 
 from app.models import Base
-from sqlalchemy import create_engine
-
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
     connect_args={"sslmode": "require"}
 )
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 
 def init_db():
