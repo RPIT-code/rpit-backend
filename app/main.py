@@ -133,62 +133,60 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
     key = os.getenv("RAZORPAY_KEY_ID")
     secret = os.getenv("RAZORPAY_SECRET")
 
-    try:
-        order_res = requests.get(
-            f"https://api.razorpay.com/v1/orders/{order_id}",
-            auth=HTTPBasicAuth(key, secret)
-        )
+    order = requests.get(
+        f"https://api.razorpay.com/v1/orders/{order_id}",
+        auth=HTTPBasicAuth(key, secret)
+    ).json()
 
-        if order_res.status_code != 200:
-            return {"error": "Invalid order from Razorpay"}
+    payments = requests.get(
+        f"https://api.razorpay.com/v1/orders/{order_id}/payments",
+        auth=HTTPBasicAuth(key, secret)
+    ).json()
 
-        order = order_res.json()
-
-        pay_res = requests.get(
-            f"https://api.razorpay.com/v1/orders/{order_id}/payments",
-            auth=HTTPBasicAuth(key, secret)
-        )
-
-        payments = pay_res.json()
-
-    except Exception as e:
-        print("Razorpay error:", str(e))
-        return {"error": "Razorpay fetch failed"}
-
-    attempts = order.get("attempts", 0)
     items = payments.get("items", [])
+    attempts = order.get("attempts", 0)
 
-    # ✅ PAID
-    if order.get("status") == "paid":
-        captured = next((p for p in items if p["status"] == "captured"), None)
+# ✅ SUCCESS
+if order.get("status") == "paid":
+    captured = next((p for p in items if p["status"] == "captured"), None)
 
-        if captured:
+    if captured:
+        if payment.status != "paid":
             payment.status = "paid"
             payment.event_type = "paid"
             payment.razorpay_payment_id = captured["id"]
-            payment.status_reason = "verified"
-
+            payment.status_reason = "verified via Razorpay"
             db.commit()
 
-            return {
-                "state": "paid",
-                "amount": captured["amount"] / 100,
-                "method": captured["method"],
-                "attempts": attempts
-            }
+        return {
+            "state": "paid",   # ✅ FIXED
+            "order_id": order_id,
+            "amount": captured["amount"] / 100,
+            "attempts": attempts,
+            "method": captured.get("method"),
+            "key": key
+        }
 
-    # ❌ FAILED
-    if items:
-        last = items[-1]
-        if last["status"] == "failed":
-            return {
-                "state": "failed",
-                "reason": last.get("error_description"),
-                "attempts": attempts
-            }
 
-    return {
-        "state": "pending",
-        "amount": order.get("amount", 0) / 100,
-        "attempts": attempts
-    }
+# ❌ FAILED
+if items:
+    last = items[-1]
+    if last["status"] == "failed":
+        return {
+            "state": "failed",   # ✅ FIXED
+            "order_id": order_id,
+            "amount": order.get("amount") / 100,
+            "attempts": attempts,
+            "reason": last.get("error_description"),
+            "key": key
+        }
+
+
+# ⏳ PENDING
+return {
+    "state": "pending",   # ✅ correct
+    "order_id": order_id,
+    "amount": order.get("amount") / 100,
+    "attempts": attempts,
+    "key": key
+}
