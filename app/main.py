@@ -2,22 +2,26 @@ import os
 import razorpay
 import requests
 from requests.auth import HTTPBasicAuth
-from fastapi import FastAPI, Depends, Body
+from datetime import datetime
+
+from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 
 from app.db import test_db, init_db, get_db
 from app.models import Case, CaseStatusLog, Message, ServiceItem, Payment
 from fastapi.middleware.cors import CORSMiddleware
 
+
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # 🔥 allow all (for testing)
+    allow_origins=["*"],   # testing only
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 client = razorpay.Client(auth=(
     os.getenv("RAZORPAY_KEY_ID"),
     os.getenv("RAZORPAY_SECRET")
@@ -38,7 +42,6 @@ def home():
 # 🧾 Create Case
 @app.post("/create-case")
 def create_case(title: str, description: str, db: Session = Depends(get_db)):
-
     case = Case(title=title, description=description)
     db.add(case)
     db.commit()
@@ -63,7 +66,6 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
 # 🧩 Add Service
 @app.post("/add-service")
 def add_service(case_id: int, title: str, description: str, price: int, db: Session = Depends(get_db)):
-
     service = ServiceItem(
         case_id=case_id,
         title=title,
@@ -91,19 +93,22 @@ def create_payment(service_item_id: int, db: Session = Depends(get_db)):
         "payment_capture": 1
     })
 
+    # expire old active payments
     db.query(Payment).filter(
         Payment.service_item_id == service_item_id,
         Payment.status == "created"
     ).update({
         "status": "expired",
         "event_type": "expired",
-        "status_reason": "new attempt"
+        "status_reason": "new attempt",
+        "updated_at": datetime.utcnow()
     })
 
     payment = Payment(
         service_item_id=service_item_id,
         amount=service.price,
-        razorpay_order_id=order["id"]
+        razorpay_order_id=order["id"],
+        event_type="created"
     )
 
     db.add(payment)
@@ -116,7 +121,7 @@ def create_payment(service_item_id: int, db: Session = Depends(get_db)):
     }
 
 
-# 🔥 REAL VALIDATION (MAIN ENGINE)
+# 🔥 VALIDATE + SYNC (CORE ENGINE)
 @app.get("/validate-payment/{service_id}")
 def validate_payment(service_id: int, db: Session = Depends(get_db)):
 
@@ -145,6 +150,9 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
 
     items = payments.get("items", [])
     attempts = order.get("attempts", 0)
+    last_payment = items[-1] if items else None
+
+    updated = False  # track DB writes
 
     # ✅ SUCCESS
     if order.get("status") == "paid":
@@ -156,6 +164,17 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
                 payment.event_type = "paid"
                 payment.razorpay_payment_id = captured["id"]
                 payment.status_reason = "verified via Razorpay"
+                payment.updated_at = datetime.utcnow()
+
+                payment.meta = {
+                    "method": captured.get("method"),
+                    "attempts": attempts,
+                    "amount": captured.get("amount") / 100
+                }
+
+                updated = True
+
+            if updated:
                 db.commit()
 
             return {
@@ -168,19 +187,42 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
             }
 
     # ❌ FAILED
-    if items:
-        last = items[-1]
-        if last["status"] == "failed":
-            return {
-                "state": "failed",
-                "order_id": order_id,
-                "amount": order.get("amount") / 100,
+    if last_payment and last_payment["status"] == "failed":
+
+        if payment.status != "failed":
+            payment.status = "failed"
+            payment.event_type = "failed"
+            payment.status_reason = last_payment.get("error_description")
+            payment.updated_at = datetime.utcnow()
+
+            payment.meta = {
                 "attempts": attempts,
-                "reason": last.get("error_description"),
-                "key": key
+                "error_code": last_payment.get("error_code"),
+                "method": last_payment.get("method")
             }
 
+            updated = True
+
+        if updated:
+            db.commit()
+
+        return {
+            "state": "failed",
+            "order_id": order_id,
+            "amount": order.get("amount") / 100,
+            "attempts": attempts,
+            "reason": last_payment.get("error_description"),
+            "key": key
+        }
+
     # ⏳ PENDING
+    if payment.status == "created":
+        payment.meta = {
+            "attempts": attempts
+        }
+        payment.updated_at = datetime.utcnow()
+        db.commit()
+
     return {
         "state": "pending",
         "order_id": order_id,
