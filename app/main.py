@@ -7,7 +7,17 @@ from sqlalchemy.orm import Session
 
 from app.db import test_db, init_db, get_db
 from app.models import Case, CaseStatusLog, Message, ServiceItem, Payment
+from fastapi.middleware.cors import CORSMiddleware
 
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # 🔥 allow all (for testing)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 client = razorpay.Client(auth=(
     os.getenv("RAZORPAY_KEY_ID"),
     os.getenv("RAZORPAY_SECRET")
