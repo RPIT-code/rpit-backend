@@ -626,26 +626,64 @@ def get_user_cases(user_id: int, db: Session = Depends(get_db)):
         .order_by(Case.created_at.desc())\
         .all()
 
+    case_ids = [c.id for c in cases]
+
+    # 🔥 batch fetch services
+    services = db.query(ServiceItem)\
+        .filter(ServiceItem.case_id.in_(case_ids))\
+        .order_by(ServiceItem.created_at.desc())\
+        .all()
+
+    service_map = {}
+    for s in services:
+        service_map.setdefault(s.case_id, []).append(s)
+
+    # 🔥 collect service ids
+    service_ids = [s.id for s in services]
+
+    # 🔥 batch fetch payments
+    payments = db.query(Payment)\
+        .filter(Payment.service_item_id.in_(service_ids))\
+        .order_by(Payment.created_at.desc())\
+        .all()
+
+    payment_map = {}
+    for p in payments:
+        payment_map.setdefault(p.service_item_id, []).append(p)
+
+    # 🔥 batch fetch timeline
+    timelines = db.query(CaseStatusLog)\
+        .filter(CaseStatusLog.case_id.in_(case_ids))\
+        .order_by(CaseStatusLog.created_at.asc())\
+        .all()
+
+    timeline_map = {}
+    for t in timelines:
+        timeline_map.setdefault(t.case_id, []).append(t)
+
     result = []
 
     for c in cases:
 
-        services = db.query(ServiceItem)\
-            .filter(ServiceItem.case_id == c.id).all()
+        case_services = service_map.get(c.id, [])
+        latest_service = case_services[0] if case_services else None
 
-        timeline = db.query(CaseStatusLog)\
-            .filter(CaseStatusLog.case_id == c.id)\
-            .order_by(CaseStatusLog.created_at.asc()).all()
+        latest_payment = None
+        if latest_service:
+            payments_list = payment_map.get(latest_service.id, [])
+            latest_payment = payments_list[0] if payments_list else None
 
-        last_status = timeline[-1].status_title if timeline else None
+        case_timeline = timeline_map.get(c.id, [])
+        last_status = case_timeline[-1].status_title if case_timeline else None
 
         result.append({
             "id": c.id,
             "title": c.title,
             "status": c.status,
             "last_status": last_status,
-            "service_count": len(services),
-            "created_at": c.created_at
+            "created_at": c.created_at,
+            "price": latest_service.price if latest_service else None,
+            "payment_status": latest_payment.status if latest_payment else None
         })
 
     return result
