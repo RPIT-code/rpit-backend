@@ -75,11 +75,52 @@ def add_service(case_id: int, title: str, description: str, price: int, db: Sess
     )
 
     db.add(service)
+    
+    
+
+    db.add(CaseStatusLog(
+    case_id=case_id,
+    status_title="Service Proposed",
+    status_description=f"{title} → ₹{price}"
+    ))
     db.commit()
     db.refresh(service)
-
     return {"service_id": service.id}
 
+
+# 🔁 UPDATE SERVICE (ADD ONLY - NO CHANGE ABOVE)
+@app.post("/update-service")
+def update_service(service_id: int, new_price: int, reason: str, db: Session = Depends(get_db)):
+
+    service = db.query(ServiceItem).filter(ServiceItem.id == service_id).first()
+
+    if not service:
+        return {"error": "Service not found"}
+
+    # expire pending payments
+    db.query(Payment).filter(
+        Payment.service_item_id == service_id,
+        Payment.status == "created"
+    ).update({
+        "status": "expired",
+        "event_type": "expired",
+        "status_reason": reason,
+        "updated_at": datetime.utcnow()
+    })
+
+    old_price = service.price
+    service.price = new_price
+    service.updated_at = datetime.utcnow()
+    # timeline entry
+    db.add(CaseStatusLog(
+        case_id=service.case_id,
+        status_title="Service Updated",
+        status_description=f"₹{old_price} → ₹{new_price} | {reason}"
+    ))
+
+    db.commit()
+
+    return {"message": "Service updated"}
 
 # 💳 Create Payment
 @app.post("/create-payment")
@@ -269,7 +310,174 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
             "key": key
         }
 
-
     except Exception as e:
         print("VALIDATION ERROR:", str(e))
         return {"error": "internal error"}
+    
+
+# 📂 GET FULL CASE (UI BACKBONE)
+@app.get("/case/{case_id}")
+def get_case(case_id: int, db: Session = Depends(get_db)):
+
+    case = db.query(Case).filter(Case.id == case_id).first()
+    if not case:
+        return {"error": "Case not found"}
+
+    # timeline
+    timeline = db.query(CaseStatusLog)\
+        .filter(CaseStatusLog.case_id == case_id)\
+        .order_by(CaseStatusLog.created_at).all()
+
+    # messages
+    messages = db.query(Message)\
+        .filter(Message.case_id == case_id)\
+        .order_by(Message.created_at).all()
+
+    # services
+    services = db.query(ServiceItem)\
+        .filter(ServiceItem.case_id == case_id).all()
+
+    service_data = []
+
+    for s in services:
+        payments = db.query(Payment)\
+            .filter(Payment.service_item_id == s.id)\
+            .order_by(Payment.created_at.desc()).all()
+
+        service_data.append({
+            "id": s.id,
+            "title": s.title,
+            "description": s.description,
+            "price": s.price,
+            "status": s.status,
+            "payments": [
+                {
+                    "id": p.id,
+                    "amount": p.amount,
+                    "status": p.status,
+                    "event_type": p.event_type,
+                    "reason": p.status_reason,
+                    "created_at": p.created_at,
+                    "updated_at": p.updated_at,
+                    "meta": p.meta
+                } for p in payments
+            ]
+        })
+
+    return {
+        "case": {
+            "id": case.id,
+            "title": case.title,
+            "description": case.description,
+            "status": case.status
+        },
+        "timeline": [
+            {
+                "title": t.status_title,
+                "description": t.status_description,
+                "time": t.created_at
+            } for t in timeline
+        ],
+        "messages": [
+            {
+                "sender": m.sender_type,
+                "message": m.message,
+                "time": m.created_at
+            } for m in messages
+        ],
+        "services": service_data
+    }
+
+
+# 💬 SEND MESSAGE
+@app.post("/send-message")
+def send_message(case_id: int, sender: str, message: str, db: Session = Depends(get_db)):
+
+    msg = Message(
+        case_id=case_id,
+        sender_type=sender,
+        message=message
+    )
+
+    db.add(msg)
+    db.commit()
+
+    return {"message": "sent"}
+
+
+# 🔒 CLOSE CASE
+@app.post("/close-case")
+def close_case(case_id: int, db: Session = Depends(get_db)):
+
+    case = db.query(Case).filter(Case.id == case_id).first()
+
+    if not case:
+        return {"error": "Case not found"}
+
+    case.status = "closed"
+    case.status = "reopened"
+    case.updated_at = datetime.utcnow()
+    db.add(CaseStatusLog(
+        case_id=case_id,
+        status_title="Case Closed",
+        status_description="Resolved"
+    ))
+
+    db.commit()
+
+    return {"message": "Case closed"}
+
+
+# 🔁 REOPEN CASE
+@app.post("/reopen-case")
+def reopen_case(case_id: int, reason: str, db: Session = Depends(get_db)):
+
+    case = db.query(Case).filter(Case.id == case_id).first()
+
+    if not case:
+        return {"error": "Case not found"}
+
+    case.status = "reopened"
+
+    db.add(CaseStatusLog(
+        case_id=case_id,
+        status_title="Case Reopened",
+        status_description=reason
+    ))
+
+    db.commit()
+
+    return {"message": "Case reopened"}
+
+
+# 💸 REFUND PAYMENT (ADD ONLY - NO CHANGE ABOVE)
+@app.post("/refund-payment")
+def refund_payment(payment_id: int, refund_amount: int, reason: str, db: Session = Depends(get_db)):
+
+    payment = db.query(Payment).filter(Payment.id == payment_id).first()
+
+    if not payment:
+        return {"error": "Payment not found"}
+
+    if payment.status != "paid":
+        return {"error": "Only paid payments can be refunded"}
+
+    payment.status = "refunded"
+    payment.event_type = "refunded"
+    payment.refund_amount = refund_amount
+    payment.refund_status = "processed"
+    payment.status_reason = reason
+    payment.updated_at = datetime.utcnow()
+
+    service = db.query(ServiceItem).filter(ServiceItem.id == payment.service_item_id).first()
+
+    if service:
+        db.add(CaseStatusLog(
+            case_id=service.case_id,
+            status_title="Refund Issued",
+            status_description=f"₹{refund_amount} refunded - {reason}"
+        ))
+
+    db.commit()
+
+    return {"message": "Refund processed"}
