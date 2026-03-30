@@ -89,6 +89,10 @@ def add_service(case_id: int, title: str, description: str, price: int, db: Sess
 
 
 # 🔁 UPDATE SERVICE (ADD ONLY - NO CHANGE ABOVE)
+
+from fastapi import Depends
+from sqlalchemy.orm import Session
+
 @app.post("/update-service")
 def update_service(service_id: int, new_price: int, reason: str, db: Session = Depends(get_db)):
 
@@ -97,21 +101,27 @@ def update_service(service_id: int, new_price: int, reason: str, db: Session = D
     if not service:
         return {"error": "Service not found"}
 
-    # expire pending payments
-    db.query(Payment).filter(
+    # 🔥 expire pending payments (ROW LEVEL — IMPORTANT)
+    old_payments = db.query(Payment).filter(
         Payment.service_item_id == service_id,
         Payment.status == "created"
-    ).update({
-        "status": "expired",
-        "event_type": "expired",
-        "status_reason": reason,
-        "updated_at": datetime.utcnow()
-    })
+    ).all()
 
+    for p in old_payments:
+        p.status = "expired"
+        p.event_type = "expired"
+
+        # ✅ preserve old reason if new one not provided
+        p.status_reason = reason if reason else p.status_reason
+
+        p.updated_at = datetime.utcnow()
+
+    # 🔥 update service price
     old_price = service.price
     service.price = new_price
     service.updated_at = datetime.utcnow()
-    # timeline entry
+
+    # 🧾 timeline entry
     db.add(CaseStatusLog(
         case_id=service.case_id,
         status_title="Service Updated",
@@ -126,8 +136,15 @@ def update_service(service_id: int, new_price: int, reason: str, db: Session = D
 @app.post("/create-payment")
 def create_payment(service_item_id: int, db: Session = Depends(get_db)):
 
-    service = db.query(ServiceItem).filter(ServiceItem.id == service_item_id).first()
 
+    service = db.query(ServiceItem).filter(ServiceItem.id == service_item_id).first()
+    if not service:
+        return {"error": "Service not found"}
+
+    if service.status == "approved":
+        return {"error": "Already paid"}
+    
+    
     if not service or not service.price:
         return {"error": "Invalid service"}
 
@@ -138,22 +155,35 @@ def create_payment(service_item_id: int, db: Session = Depends(get_db)):
     })
 
     # expire old payments
-    db.query(Payment).filter(
-        Payment.service_item_id == service_item_id,
-        Payment.status == "created"
-    ).update({
-        "status": "expired",
-        "event_type": "expired",
-        "status_reason": "new attempt",
-        "updated_at": datetime.utcnow()
-    })
+    old_payments = db.query(Payment).filter(
+    Payment.service_item_id == service_item_id,
+    Payment.status == "created"
+    ).all()
+
+    for p in old_payments:
+        p.status = "expired"
+        p.event_type = "expired"
+        p.status_reason = p.status_reason or "new attempt"
+        p.updated_at = datetime.utcnow()
+
+    # 🔥 get last meaningful reason (for propagation)
+    last_reason_payment = db.query(Payment)\
+        .filter(
+            Payment.service_item_id == service_item_id,
+            Payment.status_reason.isnot(None)
+        )\
+        .order_by(Payment.created_at.desc())\
+        .first()
+
+    propagated_reason = last_reason_payment.status_reason if last_reason_payment else None
 
     payment = Payment(
-        service_item_id=service_item_id,
-        amount=service.price,
-        razorpay_order_id=order["id"],
-        event_type="created"
-    )
+    service_item_id=service_item_id,
+    amount=service.price,
+    razorpay_order_id=order["id"],
+    event_type="created",
+    status_reason=propagated_reason   # 🔥 THIS LINE
+)
 
     db.add(payment)
     db.commit()
@@ -213,11 +243,36 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
 
             if captured:
                 existing_meta = payment.meta if payment.meta else {}
-                
-                if (
+
+                # ❌ AMOUNT MISMATCH
+                if captured["amount"] != payment.amount * 100:
+
+                    payment.status = "failed"
+                    payment.event_type = "failed"
+                    payment.status_reason = "amount mismatch"
+                    payment.updated_at = datetime.utcnow()
+
+                    existing_meta.update({
+                        "razorpay_amount": captured["amount"] / 100,
+                        "expected_amount": payment.amount
+                    })
+
+                    payment.meta = existing_meta
+
+                    db.commit()
+
+                    return {"error": "Amount mismatch"}
+
+                # ✅ SUCCESS / UPDATE
+                should_update = (
                     payment.status != "paid"
                     or existing_meta.get("attempts") != attempts
-                ):
+                )
+
+                if should_update:
+
+                    is_first_success = payment.status != "paid"
+
                     payment.status = "paid"
                     payment.event_type = "paid"
                     payment.razorpay_payment_id = captured["id"]
@@ -232,19 +287,20 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
 
                     payment.meta = existing_meta
 
-                    # update service + timeline
-                    service = db.query(ServiceItem)\
-                        .filter(ServiceItem.id == payment.service_item_id)\
-                        .first()
+                    # 🔥 ONLY FIRST TIME → timeline
+                    if is_first_success:
+                        service = db.query(ServiceItem)\
+                            .filter(ServiceItem.id == payment.service_item_id)\
+                            .first()
 
-                    if service:
-                        service.status = "approved"
+                        if service:
+                            service.status = "approved"
 
-                        db.add(CaseStatusLog(
-                            case_id=service.case_id,
-                            status_title="Payment Received",
-                            status_description=f"₹{payment.amount} received via {captured.get('method')}"
-                        ))
+                            db.add(CaseStatusLog(
+                                case_id=service.case_id,
+                                status_title="Payment Received",
+                                status_description=f"₹{payment.amount} received via {captured.get('method')}"
+                            ))
 
                     db.commit()
 
@@ -256,7 +312,6 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
                     "method": captured.get("method"),
                     "key": key
                 }
-
         # =========================
         # ❌ FAILED
         # =========================
@@ -415,7 +470,6 @@ def close_case(case_id: int, db: Session = Depends(get_db)):
         return {"error": "Case not found"}
 
     case.status = "closed"
-    case.status = "reopened"
     case.updated_at = datetime.utcnow()
     db.add(CaseStatusLog(
         case_id=case_id,
@@ -438,7 +492,7 @@ def reopen_case(case_id: int, reason: str, db: Session = Depends(get_db)):
         return {"error": "Case not found"}
 
     case.status = "reopened"
-
+    case.updated_at = datetime.utcnow()
     db.add(CaseStatusLog(
         case_id=case_id,
         status_title="Case Reopened",
@@ -481,3 +535,48 @@ def refund_payment(payment_id: int, refund_amount: int, reason: str, db: Session
     db.commit()
 
     return {"message": "Refund processed"}
+
+
+@app.get("/cases")
+def get_cases(db: Session = Depends(get_db)):
+
+    cases = db.query(Case).order_by(Case.created_at.desc()).all()
+
+    case_ids = [c.id for c in cases]
+
+    # 🔥 batch fetch
+    services = db.query(ServiceItem)\
+        .filter(ServiceItem.case_id.in_(case_ids)).all()
+
+    timelines = db.query(CaseStatusLog)\
+        .filter(CaseStatusLog.case_id.in_(case_ids))\
+        .order_by(CaseStatusLog.created_at.asc()).all()
+
+    # 🔥 group them
+    service_map = {}
+    for s in services:
+        service_map.setdefault(s.case_id, []).append(s)
+
+    timeline_map = {}
+    for t in timelines:
+        timeline_map.setdefault(t.case_id, []).append(t)
+
+    result = []
+
+    for c in cases:
+
+        case_services = service_map.get(c.id, [])
+        case_timeline = timeline_map.get(c.id, [])
+
+        last_status = case_timeline[-1].status_title if case_timeline else None
+
+        result.append({
+            "id": c.id,
+            "title": c.title,
+            "status": c.status,
+            "last_status": last_status,
+            "service_count": len(case_services),
+            "created_at": c.created_at
+        })
+
+    return result
