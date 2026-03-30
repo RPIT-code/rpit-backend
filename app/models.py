@@ -13,6 +13,7 @@ class Case(Base):
     title = Column(String)
     description = Column(Text)
     status = Column(String, default="open")
+    user_id = Column(Integer, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
 

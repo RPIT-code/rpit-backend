@@ -1,6 +1,11 @@
 import os
 import razorpay
 import requests
+
+
+def trigger_event(event_type: str, payload: dict):
+    print(f"[EVENT] {event_type}", payload)
+
 from requests.auth import HTTPBasicAuth
 from datetime import datetime
 
@@ -41,12 +46,12 @@ def home():
 
 # 🧾 Create Case
 @app.post("/create-case")
-def create_case(title: str, description: str, db: Session = Depends(get_db)):
-    case = Case(title=title, description=description)
+def create_case(title: str, description: str, user_id: int, db: Session = Depends(get_db)):
+    case = Case(title=title, description=description, user_id=user_id)
     db.add(case)
     db.commit()
     db.refresh(case)
-
+    
     db.add(CaseStatusLog(
         case_id=case.id,
         status_title="Issue Submitted",
@@ -60,6 +65,10 @@ def create_case(title: str, description: str, db: Session = Depends(get_db)):
     ))
 
     db.commit()
+    trigger_event("case_created", {
+        "case_id": case.id,
+        "title": case.title
+    })
     return {"case_id": case.id}
 
 
@@ -75,9 +84,6 @@ def add_service(case_id: int, title: str, description: str, price: int, db: Sess
     )
 
     db.add(service)
-    
-    
-
     db.add(CaseStatusLog(
     case_id=case_id,
     status_title="Service Proposed",
@@ -89,9 +95,6 @@ def add_service(case_id: int, title: str, description: str, price: int, db: Sess
 
 
 # 🔁 UPDATE SERVICE (ADD ONLY - NO CHANGE ABOVE)
-
-from fastapi import Depends
-from sqlalchemy.orm import Session
 
 @app.post("/update-service")
 def update_service(service_id: int, new_price: int, reason: str, db: Session = Depends(get_db)):
@@ -145,7 +148,7 @@ def create_payment(service_item_id: int, db: Session = Depends(get_db)):
         return {"error": "Already paid"}
     
     
-    if not service or not service.price:
+    if not service.price:
         return {"error": "Invalid service"}
 
     order = client.order.create({
@@ -301,7 +304,10 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
                                 status_title="Payment Received",
                                 status_description=f"₹{payment.amount} received via {captured.get('method')}"
                             ))
-
+                            trigger_event("payment_success", {
+                                "service_id": service.id,
+                                "amount": payment.amount
+                            })
                     db.commit()
 
                 return {
@@ -332,6 +338,26 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
                 })
 
                 payment.meta = existing_meta
+
+                # 🔥 ADD THIS BLOCK
+                service = db.query(ServiceItem)\
+                    .filter(ServiceItem.id == payment.service_item_id)\
+                    .first()
+
+                if service and service.status != "approved":
+                    service.status = "payment_failed"
+
+                    db.add(CaseStatusLog(
+                        case_id=service.case_id,
+                        status_title="Payment Failed",
+                        status_description=payment.status_reason
+                    ))
+
+                trigger_event("payment_failed", {
+                    "service_id": payment.service_item_id,
+                    "reason": payment.status_reason
+                })
+
                 db.commit()
 
             return {
@@ -397,7 +423,10 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
     for s in services:
         payments = db.query(Payment)\
             .filter(Payment.service_item_id == s.id)\
-            .order_by(Payment.created_at.desc()).all()
+            .order_by(Payment.created_at.desc())\
+            .all()
+
+        latest_payment = payments[0] if payments else None
 
         service_data.append({
             "id": s.id,
@@ -405,6 +434,12 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
             "description": s.description,
             "price": s.price,
             "status": s.status,
+
+            "payment_summary": {
+                "status": latest_payment.status if latest_payment else None,
+                "amount": latest_payment.amount if latest_payment else None
+            },
+
             "payments": [
                 {
                     "id": p.id,
@@ -576,6 +611,40 @@ def get_cases(db: Session = Depends(get_db)):
             "status": c.status,
             "last_status": last_status,
             "service_count": len(case_services),
+            "created_at": c.created_at
+        })
+
+    return result
+
+
+
+@app.get("/cases/{user_id}")
+def get_user_cases(user_id: int, db: Session = Depends(get_db)):
+
+    cases = db.query(Case)\
+        .filter(Case.user_id == user_id)\
+        .order_by(Case.created_at.desc())\
+        .all()
+
+    result = []
+
+    for c in cases:
+
+        services = db.query(ServiceItem)\
+            .filter(ServiceItem.case_id == c.id).all()
+
+        timeline = db.query(CaseStatusLog)\
+            .filter(CaseStatusLog.case_id == c.id)\
+            .order_by(CaseStatusLog.created_at.asc()).all()
+
+        last_status = timeline[-1].status_title if timeline else None
+
+        result.append({
+            "id": c.id,
+            "title": c.title,
+            "status": c.status,
+            "last_status": last_status,
+            "service_count": len(services),
             "created_at": c.created_at
         })
 
