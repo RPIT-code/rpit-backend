@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, JSON
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
+from sqlalchemy import Column, JSON
 
 Base = declarative_base()
 
@@ -73,7 +74,7 @@ class Payment(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     service_item_id = Column(Integer, ForeignKey("service_items.id"))
-
+    meta = Column(JSON, nullable=True)
     amount = Column(Integer)
 
     status = Column(String, default="created")

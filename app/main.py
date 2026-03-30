@@ -169,7 +169,7 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
         captured = next((p for p in items if p["status"] == "captured"), None)
 
         if captured:
-            existing_meta = payment.meta or {}
+            existing_meta = payment.meta if hasattr(payment, "meta") and payment.meta else {}
 
             if (
                 payment.status != "paid"
