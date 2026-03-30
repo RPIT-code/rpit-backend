@@ -128,141 +128,148 @@ def create_payment(service_item_id: int, db: Session = Depends(get_db)):
 @app.get("/validate-payment/{service_id}")
 def validate_payment(service_id: int, db: Session = Depends(get_db)):
 
-    payment = db.query(Payment)\
-        .filter(Payment.service_item_id == service_id)\
-        .order_by(Payment.created_at.desc())\
-        .first()
+    try:
+        payment = db.query(Payment)\
+            .filter(Payment.service_item_id == service_id)\
+            .order_by(Payment.created_at.desc())\
+            .first()
 
-    if not payment:
-        return {"error": "No payment"}
+        if not payment:
+            return {"error": "No payment"}
 
-    order_id = payment.razorpay_order_id
+        order_id = payment.razorpay_order_id
 
-    key = os.getenv("RAZORPAY_KEY_ID")
-    secret = os.getenv("RAZORPAY_SECRET")
+        key = os.getenv("RAZORPAY_KEY_ID")
+        secret = os.getenv("RAZORPAY_SECRET")
 
-    order = requests.get(
-        f"https://api.razorpay.com/v1/orders/{order_id}",
-        auth=HTTPBasicAuth(key, secret)
-    ).json()
+        order = requests.get(
+            f"https://api.razorpay.com/v1/orders/{order_id}",
+            auth=HTTPBasicAuth(key, secret)
+        ).json()
 
-    payments = requests.get(
-        f"https://api.razorpay.com/v1/orders/{order_id}/payments",
-        auth=HTTPBasicAuth(key, secret)
-    ).json()
+        payments = requests.get(
+            f"https://api.razorpay.com/v1/orders/{order_id}/payments",
+            auth=HTTPBasicAuth(key, secret)
+        ).json()
 
-    # safety
-    if "error" in order:
-        return {"error": "Razorpay order fetch failed"}
 
-    if "error" in payments:
-        return {"error": "Razorpay payment fetch failed"}
+        # safety
+        if "error" in order:
+            return {"error": "Razorpay order fetch failed"}
 
-    items = payments.get("items", [])
-    attempts = order.get("attempts", 0)
-    last_payment = items[-1] if items else None
+        if "error" in payments:
+            return {"error": "Razorpay payment fetch failed"}
 
-    # =========================
-    # ✅ SUCCESS
-    # =========================
-    if order.get("status") == "paid":
-        captured = next((p for p in items if p["status"] == "captured"), None)
+        items = payments.get("items", [])
+        attempts = order.get("attempts", 0)
+        last_payment = items[-1] if items else None
 
-        if captured:
-            existing_meta = payment.meta if hasattr(payment, "meta") and payment.meta else {}
+        # =========================
+        # ✅ SUCCESS
+        # =========================
+        if order.get("status") == "paid":
+            captured = next((p for p in items if p["status"] == "captured"), None)
 
-            if (
-                payment.status != "paid"
-                or existing_meta.get("attempts") != attempts
-            ):
-                payment.status = "paid"
-                payment.event_type = "paid"
-                payment.razorpay_payment_id = captured["id"]
-                payment.status_reason = "verified via Razorpay"
+            if captured:
+                existing_meta = payment.meta if payment.meta else {}
+                
+                if (
+                    payment.status != "paid"
+                    or existing_meta.get("attempts") != attempts
+                ):
+                    payment.status = "paid"
+                    payment.event_type = "paid"
+                    payment.razorpay_payment_id = captured["id"]
+                    payment.status_reason = "verified via Razorpay"
+                    payment.updated_at = datetime.utcnow()
+
+                    existing_meta.update({
+                        "method": captured.get("method"),
+                        "attempts": attempts,
+                        "amount": captured.get("amount") / 100
+                    })
+
+                    payment.meta = existing_meta
+
+                    # update service + timeline
+                    service = db.query(ServiceItem)\
+                        .filter(ServiceItem.id == payment.service_item_id)\
+                        .first()
+
+                    if service:
+                        service.status = "approved"
+
+                        db.add(CaseStatusLog(
+                            case_id=service.case_id,
+                            status_title="Payment Received",
+                            status_description=f"₹{payment.amount} received via {captured.get('method')}"
+                        ))
+
+                    db.commit()
+
+                return {
+                    "state": "paid",
+                    "order_id": order_id,
+                    "amount": captured["amount"] / 100,
+                    "attempts": attempts,
+                    "method": captured.get("method"),
+                    "key": key
+                }
+
+        # =========================
+        # ❌ FAILED
+        # =========================
+        if last_payment and last_payment["status"] == "failed":
+
+            existing_meta = payment.meta if payment.meta else {}
+
+            if payment.status != "failed" or existing_meta.get("attempts") != attempts:
+                payment.status = "failed"
+                payment.event_type = "failed"
+                payment.status_reason = last_payment.get("error_description")
                 payment.updated_at = datetime.utcnow()
 
                 existing_meta.update({
-                    "method": captured.get("method"),
                     "attempts": attempts,
-                    "amount": captured.get("amount") / 100
+                    "method": last_payment.get("method"),
+                    "error_code": last_payment.get("error_code")
                 })
 
                 payment.meta = existing_meta
-
-                # update service + timeline
-                service = db.query(ServiceItem)\
-                    .filter(ServiceItem.id == payment.service_item_id)\
-                    .first()
-
-                if service:
-                    service.status = "approved"
-
-                    db.add(CaseStatusLog(
-                        case_id=service.case_id,
-                        status_title="Payment Received",
-                        status_description=f"₹{payment.amount} received via {captured.get('method')}"
-                    ))
-
                 db.commit()
 
             return {
-                "state": "paid",
+                "state": "failed",
                 "order_id": order_id,
-                "amount": captured["amount"] / 100,
+                "amount": order.get("amount") / 100,
                 "attempts": attempts,
-                "method": captured.get("method"),
+                "reason": last_payment.get("error_description"),
                 "key": key
             }
 
-    # =========================
-    # ❌ FAILED
-    # =========================
-    if last_payment and last_payment["status"] == "failed":
+        # =========================
+        # ⏳ PENDING
+        # =========================
+        existing_meta = payment.meta if payment.meta else {}
 
-        existing_meta = payment.meta or {}
-
-        if payment.status != "failed" or existing_meta.get("attempts") != attempts:
-            payment.status = "failed"
-            payment.event_type = "failed"
-            payment.status_reason = last_payment.get("error_description")
-            payment.updated_at = datetime.utcnow()
-
+        if existing_meta.get("attempts") != attempts:
             existing_meta.update({
-                "attempts": attempts,
-                "method": last_payment.get("method"),
-                "error_code": last_payment.get("error_code")
+                "attempts": attempts
             })
 
             payment.meta = existing_meta
+            payment.updated_at = datetime.utcnow()
             db.commit()
 
         return {
-            "state": "failed",
+            "state": "pending",
             "order_id": order_id,
             "amount": order.get("amount") / 100,
             "attempts": attempts,
-            "reason": last_payment.get("error_description"),
             "key": key
         }
 
-    # =========================
-    # ⏳ PENDING
-    # =========================
-    existing_meta = payment.meta or {}
 
-    if existing_meta.get("attempts") != attempts:
-        existing_meta.update({
-            "attempts": attempts
-        })
-
-        payment.meta = existing_meta
-        payment.updated_at = datetime.utcnow()
-        db.commit()
-
-    return {
-        "state": "pending",
-        "order_id": order_id,
-        "amount": order.get("amount") / 100,
-        "attempts": attempts,
-        "key": key
-    }
+    except Exception as e:
+        print("VALIDATION ERROR:", str(e))
+        return {"error": "internal error"}
