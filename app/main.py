@@ -228,23 +228,23 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
 
 
 	# safety
-	if "error" in order:
-	    return {
-		"state": "expired",
-		"message": "Payment link expired",
-		"amount": payment.amount,
-		"attempts": 0,
-		"key": key
-	    }
+        if "error" in order:
+            return {
+            "state": "expired",
+            "message": "Payment link expired",
+            "amount": payment.amount,
+            "attempts": 0,
+            "key": key
+            }
 
-	if "error" in payments:
-	    return {
-		"state": "expired",
-		"message": "Payment link expired",
-		"amount": payment.amount,
-		"attempts": 0,
-		"key": key
-	    }
+        if "error" in payments:
+            return {
+            "state": "expired",
+            "message": "Payment link expired",
+            "amount": payment.amount,
+            "attempts": 0,
+            "key": key
+            }
 
         # =========================
         # ✅ SUCCESS
