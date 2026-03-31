@@ -401,7 +401,7 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
 
     except Exception as e:
         print("VALIDATION ERROR:", str(e))
-        return {"error": "Unable to fetch payment details"}
+        return {"error": "Unable to fetch payment details!"}
     
 
 # 📂 GET FULL CASE (UI BACKBONE)
