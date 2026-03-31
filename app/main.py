@@ -227,16 +227,24 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
         ).json()
 
 
-        # safety
-        if "error" in order:
-            return {"error": "Razorpay order fetch failed"}
+	# safety
+	if "error" in order:
+	    return {
+		"state": "expired",
+		"message": "Payment link expired",
+		"amount": payment.amount,
+		"attempts": 0,
+		"key": key
+	    }
 
-        if "error" in payments:
-            return {"error": "Razorpay payment fetch failed"}
-
-        items = payments.get("items", [])
-        attempts = order.get("attempts", 0)
-        last_payment = items[-1] if items else None
+	if "error" in payments:
+	    return {
+		"state": "expired",
+		"message": "Payment link expired",
+		"amount": payment.amount,
+		"attempts": 0,
+		"key": key
+	    }
 
         # =========================
         # ✅ SUCCESS
