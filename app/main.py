@@ -235,12 +235,24 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
             payments = payments_res.json()
 
         except Exception as e:
-            print("RAZORPAY ERROR:", str(e))
+            error_str = str(e)
+
+            print("RAZORPAY ERROR:", error_str)
+
+            if "400" in error_str:
+                return {
+                    "state": "expired",
+                    "message": "Order expired or invalid",
+                    "amount": payment.amount,
+                    "attempts": 0,
+                    "key": key
+                }
+
             return {
                 "error": "payment_provider_unavailable",
-                "details": str(e)
+                "details": error_str
             }
-        
+                
         
         items = payments.get("items", [])
         attempts = order.get("attempts", 0)
