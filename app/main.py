@@ -216,15 +216,25 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
         key = os.getenv("RAZORPAY_KEY_ID")
         secret = os.getenv("RAZORPAY_SECRET")
 
-        order = requests.get(
-            f"https://api.razorpay.com/v1/orders/{order_id}",
-            auth=HTTPBasicAuth(key, secret)
-        ).json()
+    
+        try:
+            order_res = requests.get(
+                f"https://api.razorpay.com/v1/orders/{order_id}",
+                auth=HTTPBasicAuth(key, secret),
+                timeout=5
+            )
+            order_res.raise_for_status()
+            order = order_res.json()
+        except Exception:
+            return {"error": "Payment provider unavailable"}
 
-        payments = requests.get(
+        payments_res = requests.get(
             f"https://api.razorpay.com/v1/orders/{order_id}/payments",
-            auth=HTTPBasicAuth(key, secret)
-        ).json()
+            auth=HTTPBasicAuth(key, secret),
+            timeout=5
+        )
+        payments_res.raise_for_status()
+        payments = payments_res.json()
         
         items = payments.get("items", [])
         attempts = order.get("attempts", 0)
@@ -308,8 +318,7 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
                             .first()
 
                         if service:
-                            service.status = "approved"
-
+                            service.status = "approved" 
                             db.add(CaseStatusLog(
                                 case_id=service.case_id,
                                 status_title="Payment Received",
@@ -437,7 +446,8 @@ def get_case(case_id: int, db: Session = Depends(get_db)):
             .order_by(Payment.created_at.desc())\
             .all()
 
-        latest_payment = payments[0] if payments else None
+        paid_payment = next((p for p in payments if p.status == "paid"), None)
+        latest_payment = paid_payment if paid_payment else (payments[0] if payments else None)
 
         service_data.append({
             "id": s.id,
@@ -630,12 +640,23 @@ def get_cases(db: Session = Depends(get_db)):
 
 
 @app.get("/cases/{user_id}")
-def get_user_cases(user_id: int, db: Session = Depends(get_db)):
+def get_user_cases(user_id: int, page: int = 1, limit: int = 10, db: Session = Depends(get_db)):
+
+    offset = (page - 1) * limit
 
     cases = db.query(Case)\
         .filter(Case.user_id == user_id)\
         .order_by(Case.created_at.desc())\
+        .offset(offset)\
+        .limit(limit)\
         .all()
+
+    if not cases:
+        return {
+            "data": [],
+            "page": page,
+            "has_more": False
+        } # 🔥 IMPORTANT → stops frontend loop
 
     case_ids = [c.id for c in cases]
 
@@ -649,7 +670,6 @@ def get_user_cases(user_id: int, db: Session = Depends(get_db)):
     for s in services:
         service_map.setdefault(s.case_id, []).append(s)
 
-    # 🔥 collect service ids
     service_ids = [s.id for s in services]
 
     # 🔥 batch fetch payments
@@ -682,7 +702,8 @@ def get_user_cases(user_id: int, db: Session = Depends(get_db)):
         latest_payment = None
         if latest_service:
             payments_list = payment_map.get(latest_service.id, [])
-            latest_payment = payments_list[0] if payments_list else None
+            paid_payment = next((p for p in payments_list if p.status == "paid"), None)
+            latest_payment = paid_payment if paid_payment else (payments_list[0] if payments_list else None)
 
         case_timeline = timeline_map.get(c.id, [])
         last_status = case_timeline[-1].status_title if case_timeline else None
@@ -695,6 +716,12 @@ def get_user_cases(user_id: int, db: Session = Depends(get_db)):
             "created_at": c.created_at,
             "price": latest_service.price if latest_service else None,
             "payment_status": latest_payment.status if latest_payment else None
+            
         })
+        
 
-    return result
+    return {
+        "data": result,
+        "page": page,
+        "has_more": len(result) == limit
+    }
