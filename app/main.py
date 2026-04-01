@@ -225,39 +225,29 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
             )
             order_res.raise_for_status()
             order = order_res.json()
-        except Exception:
-            return {"error": "Payment provider unavailable"}
 
-        payments_res = requests.get(
-            f"https://api.razorpay.com/v1/orders/{order_id}/payments",
-            auth=HTTPBasicAuth(key, secret),
-            timeout=5
-        )
-        payments_res.raise_for_status()
-        payments = payments_res.json()
+            payments_res = requests.get(
+                f"https://api.razorpay.com/v1/orders/{order_id}/payments",
+                auth=HTTPBasicAuth(key, secret),
+                timeout=5
+            )
+            payments_res.raise_for_status()
+            payments = payments_res.json()
+
+        except Exception as e:
+            print("RAZORPAY ERROR:", str(e))
+            return {
+                "error": "payment_provider_unavailable",
+                "details": str(e)
+            }
+        
         
         items = payments.get("items", [])
         attempts = order.get("attempts", 0)
         last_payment = items[-1] if items else None
 
 	# safety
-        if "error" in order:
-            return {
-            "state": "expired",
-            "message": "Payment link expired",
-            "amount": payment.amount,
-            "attempts": 0,
-            "key": key
-            }
-
-        if "error" in payments:
-            return {
-            "state": "expired",
-            "message": "Payment link expired",
-            "amount": payment.amount,
-            "attempts": 0,
-            "key": key
-            }
+        
 
         # =========================
         # ✅ SUCCESS
