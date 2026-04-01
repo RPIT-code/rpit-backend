@@ -225,7 +225,10 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
             f"https://api.razorpay.com/v1/orders/{order_id}/payments",
             auth=HTTPBasicAuth(key, secret)
         ).json()
-
+        
+        items = payments.get("items", [])
+        attempts = order.get("attempts", 0)
+        last_payment = items[-1] if items else None
 
 	# safety
         if "error" in order:
@@ -249,7 +252,7 @@ def validate_payment(service_id: int, db: Session = Depends(get_db)):
         # =========================
         # ✅ SUCCESS
         # =========================
-        if order.get("status") == "paid":
+        if items:
             captured = next((p for p in items if p["status"] == "captured"), None)
 
             if captured:
